@@ -99,6 +99,44 @@ data class ActiveInlinePlayback(
     val contentType: String? = null
 )
 
+fun isValidPlayableMediaUrl(url: String?): Boolean {
+    if (url.isNullOrBlank()) return false
+    val trimmed = url.trim()
+    if (trimmed.startsWith("file://") || trimmed.startsWith("content://") || trimmed.startsWith("local_offline_file://")) {
+        return true
+    }
+    if (!trimmed.startsWith("http://", ignoreCase = true) && !trimmed.startsWith("https://", ignoreCase = true)) {
+        return false
+    }
+    val lower = trimmed.lowercase()
+    val pathWithoutQuery = lower.substringBefore("?").substringBefore("#")
+
+    // Reject obvious HTML or script documents
+    if (pathWithoutQuery.endsWith(".html") || pathWithoutQuery.endsWith(".htm") || 
+        pathWithoutQuery.endsWith(".php") || pathWithoutQuery.endsWith(".asp") || 
+        pathWithoutQuery.endsWith(".aspx") || pathWithoutQuery.endsWith(".js") || 
+        pathWithoutQuery.endsWith(".css")) {
+        return false
+    }
+
+    // Reject typical iframe embed paths unless they contain actual video stream extensions
+    val isEmbedPattern = lower.contains("/e/") || lower.contains("/embed") || lower.contains("/v/") ||
+            lower.contains("embed.") || lower.contains("player.") || lower.contains("/watch")
+    val hasDirectMediaExtension = lower.contains(".m3u8") || lower.contains(".mp4") || 
+            lower.contains(".mkv") || lower.contains(".webm") || lower.contains(".mpd") || 
+            lower.contains("akamaized.net")
+
+    if (isEmbedPattern && !hasDirectMediaExtension) {
+        return false
+    }
+
+    if (hasDirectMediaExtension) {
+        return true
+    }
+
+    return com.example.extension.managed.web.MediaStreamDetector.isMediaUrl(trimmed)
+}
+
 @OptIn(UnstableApi::class)
 @Composable
 fun InlineDetailVideoPlayer(
@@ -107,6 +145,7 @@ fun InlineDetailVideoPlayer(
     onClose: () -> Unit,
     onChangeServer: (() -> Unit)? = null,
     onNavigateToExtensions: () -> Unit = {},
+    onPlaybackUrlExtracted: ((realUrl: String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -318,7 +357,7 @@ fun InlineDetailVideoPlayer(
         } else if (MediaStorageUtils.hasDownloadedMedia(context, playback.mediaId)) {
             val f = MediaStorageUtils.findMediaFile(context, playback.mediaId)
             if (f != null && f.exists()) Uri.fromFile(f).toString() else if (raw.startsWith("http") || raw.startsWith("file://") || raw.startsWith("content://")) raw else null
-        } else if (raw.startsWith("http://") || raw.startsWith("https://") || raw.startsWith("file://") || raw.startsWith("content://")) {
+        } else if (isValidPlayableMediaUrl(raw)) {
             raw
         } else {
             // Check cached data for direct stream URL or matching quality URL
@@ -328,13 +367,20 @@ fun InlineDetailVideoPlayer(
                     normalizeCanonicalQualityName(it.name) == targetQ && it.url.isNotBlank() && it.url.startsWith("http")
                 }?.url
             } else null
-            val cachedDirect = matchedQualityUrl
+            val cachedDirect = (matchedQualityUrl
                 ?: cachedInitialData?.extractedQualities?.firstOrNull { it.url.isNotBlank() && it.url.startsWith("http") }?.url
-                ?: cachedInitialData?.directStreamUrl?.takeIf { it.isNotBlank() && it.startsWith("http") }
-                ?: cachedInitialData?.serverLinks?.values?.firstOrNull { it.isNotBlank() && it.startsWith("http") }
+                ?: cachedInitialData?.directStreamUrl?.takeIf { it.isNotBlank() && it.startsWith("http") })
+                ?.takeIf { isValidPlayableMediaUrl(it) }
             cachedDirect
         }
         mutableStateOf(initialUrl)
+    }
+
+    LaunchedEffect(playableUrl) {
+        val url = playableUrl
+        if (!url.isNullOrBlank() && !url.startsWith("auto_extract://") && isValidPlayableMediaUrl(url)) {
+            onPlaybackUrlExtracted?.invoke(url)
+        }
     }
 
     var isExtracting by remember(playback.url) {
@@ -919,10 +965,11 @@ fun InlineDetailVideoPlayer(
                 }
                 if (extractResult != null && extractResult.isSuccess) {
                     val stream = extractResult.getOrThrow().streamUrl
-                    if (!stream.isNullOrBlank()) {
+                    if (!stream.isNullOrBlank() && isValidPlayableMediaUrl(stream)) {
                         playableUrl = stream
                         isExtracting = false
                         extractionFailed = false
+                        onPlaybackUrlExtracted?.invoke(stream)
                         return@LaunchedEffect
                     }
                 }
@@ -945,14 +992,15 @@ fun InlineDetailVideoPlayer(
                     originalTitle = playback.originalTitle
                 )
             }
-            val stream = inspected?.directStreamUrl
+            val streamCandidate = inspected?.directStreamUrl
                 ?: inspected?.extractedQualities?.firstOrNull { it.url.isNotBlank() && it.name != "Auto" }?.url
-                ?: inspected?.serverLinks?.values?.firstOrNull()
+            val stream = streamCandidate?.takeIf { isValidPlayableMediaUrl(it) }
 
             if (!stream.isNullOrBlank()) {
                 playableUrl = stream
                 isExtracting = false
                 extractionFailed = false
+                onPlaybackUrlExtracted?.invoke(stream)
             } else {
                 // Fallback to originalTitle if not blank and different from title
                 if (!playback.originalTitle.isNullOrBlank() && playback.originalTitle != playback.title) {
@@ -971,14 +1019,15 @@ fun InlineDetailVideoPlayer(
                             originalTitle = playback.title
                         )
                     }
-                    val streamOrig = inspectedOrig?.directStreamUrl
+                    val streamOrigCandidate = inspectedOrig?.directStreamUrl
                         ?: inspectedOrig?.extractedQualities?.firstOrNull { it.url.isNotBlank() && it.name != "Auto" }?.url
-                        ?: inspectedOrig?.serverLinks?.values?.firstOrNull()
+                    val streamOrig = streamOrigCandidate?.takeIf { isValidPlayableMediaUrl(it) }
 
                     if (!streamOrig.isNullOrBlank()) {
                         playableUrl = streamOrig
                         isExtracting = false
                         extractionFailed = false
+                        onPlaybackUrlExtracted?.invoke(streamOrig)
                         return@LaunchedEffect
                     }
                 }
@@ -1584,6 +1633,10 @@ fun InlineDetailVideoPlayer(
                                 val currentPos = exoPlayer.currentPosition
                                 if (currentPos > 0) PlaybackSyncStore.setPosition(syncKey, currentPos)
                                 exoPlayer.pause()
+                                val url = playableUrl
+                                if (!url.isNullOrBlank() && !url.startsWith("auto_extract://") && isValidPlayableMediaUrl(url)) {
+                                    onPlaybackUrlExtracted?.invoke(url)
+                                }
                                 onFullscreen(currentPos)
                             },
                             modifier = Modifier.size(36.dp)

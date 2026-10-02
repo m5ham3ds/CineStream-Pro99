@@ -517,7 +517,56 @@ class EgyDeadScraper : BaseSiteScraper {
             )
         }
 
-        // Web extraction if link is an embed/page and webEngine is provided
+        // 2. Static / unpacked HTTP extraction via StaticMediaExtractor
+        try {
+            var extractedMediaUrl = com.example.extension.managed.web.StaticMediaExtractor.extract(link, extension.baseUrl, userAgent)
+            if (extractedMediaUrl.isNullOrBlank()) {
+                val embedDoc = Jsoup.connect(link)
+                    .userAgent(userAgent)
+                    .referrer(extension.baseUrl)
+                    .timeout(8000)
+                    .get()
+                val embedHtml = embedDoc.html()
+                val mediaMatch = Regex("https?://[^\"'\\s<>\n\r\t]+?\\.(?:m3u8|mp4)(?:\\?[^\"'\\s<>]*)?", RegexOption.IGNORE_CASE).find(embedHtml)
+                extractedMediaUrl = mediaMatch?.value?.trim()
+            }
+            if (!extractedMediaUrl.isNullOrBlank() && !extractedMediaUrl.contains("googleads") && !extractedMediaUrl.contains("facebook")) {
+                val isHls = extractedMediaUrl.contains(".m3u8") || extractedMediaUrl.contains("akamaized.net")
+                val protocol = if (isHls) StreamProtocol.HLS else StreamProtocol.DIRECT_FILE
+                val sessionHeaders = mapOf("Referer" to link, "User-Agent" to userAgent)
+                val projected = CredentialProjector.projectHeaders(sessionHeaders, session.sessionCookies, setOf("referer", "user-agent"))
+                val variants = if (isHls) {
+                    try {
+                        val parsed = com.example.utils.M3U8Parser.getQualities(extractedMediaUrl, projected)
+                        if (parsed.isNotEmpty()) {
+                            MediaVariantParser.fromQualityInfoList(parsed, StreamProtocol.HLS, projected)
+                        } else {
+                            listOf(MediaVariant(url = extractedMediaUrl, protocol = StreamProtocol.HLS, headers = projected))
+                        }
+                    } catch (_: Exception) {
+                        listOf(MediaVariant(url = extractedMediaUrl, protocol = StreamProtocol.HLS, headers = projected))
+                    }
+                } else {
+                    emptyList()
+                }
+                val playbackSource = PlaybackSource(
+                    streamUrl = extractedMediaUrl,
+                    headers = projected,
+                    mimeType = if (isHls) "application/x-mpegURL" else "video/mp4",
+                    protocol = protocol,
+                    variants = variants
+                )
+                val downloadSource = DownloadSource(
+                    url = extractedMediaUrl,
+                    mimeType = if (isHls) "application/x-mpegURL" else "video/mp4",
+                    protocol = protocol,
+                    headers = projected
+                )
+                return@withContext Result.success(ExtractionResult(playbackSource = playbackSource, downloadSource = downloadSource, variants = variants))
+            }
+        } catch (_: Exception) {}
+
+        // 3. Web extraction if link is an embed/page and webEngine is provided
         if (webEngine != null) {
             val script = com.example.extension.managed.web.ControlledWebViewEngine.getPublicEmbedMediaExtractionScript()
             val streamResult = webEngine.extractStreamUrl(

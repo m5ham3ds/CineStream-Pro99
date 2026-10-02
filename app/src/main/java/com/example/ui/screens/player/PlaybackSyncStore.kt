@@ -33,7 +33,7 @@ object PlaybackSyncStore {
         posterUrl: String? = null,
         isMovie: Boolean = true
     ) {
-        if (key.isBlank() || duration <= 0L || position < 2000L || position >= duration) return
+        if (key.isBlank() || duration <= 0L || position < 10000L || position >= duration) return
         setPosition(key, position)
         scope.launch {
             try {

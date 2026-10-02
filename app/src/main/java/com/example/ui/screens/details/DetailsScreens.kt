@@ -202,7 +202,7 @@ fun MovieDetailsScreen(
                             }?.url
                         } else null
 
-                        val cachedUrl = if (lastPlayback != null && lastPlayback.url.isNotBlank() && lastPlayback.url.startsWith("http")) {
+                        val candidateUrl = if (lastPlayback != null && lastPlayback.url.isNotBlank() && lastPlayback.url.startsWith("http")) {
                             lastPlayback.url
                         } else if (!matchingQualityUrl.isNullOrBlank()) {
                             matchingQualityUrl
@@ -210,9 +210,9 @@ fun MovieDetailsScreen(
                             cachedData.extractedQualities.firstOrNull { it.url.isNotBlank() && it.url.startsWith("http") }?.url
                         } else if (cachedData != null && !cachedData.directStreamUrl.isNullOrBlank()) {
                             cachedData.directStreamUrl
-                        } else if (cachedData != null && cachedData.serverLinks.isNotEmpty()) {
-                            cachedData.serverLinks.values.firstOrNull { it.isNotBlank() && it.startsWith("http") }
                         } else null
+
+                        val cachedUrl = candidateUrl?.takeIf { com.example.ui.components.isValidPlayableMediaUrl(it) }
 
                         val syncPos = com.example.ui.screens.player.PlaybackSyncStore.getPosition(movie.id)
                         val startPos = if (syncPos > 0L) syncPos else (lastPlayback?.positionMillis ?: 0L)
@@ -348,9 +348,28 @@ fun MovieDetailsScreen(
                     Box(modifier = if (isInPip) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(16f/9f)) {
                         com.example.ui.components.InlineDetailVideoPlayer(
                             playback = activePlayback!!,
+                            onPlaybackUrlExtracted = { realUrl ->
+                                activePlayback = activePlayback?.copy(url = realUrl)
+                            },
                             onFullscreen = { currentPos ->
                                 val p = activePlayback!!
-                                onPlay(p.title, p.url, p.serverName, p.website, p.posterUrl)
+                                val realUrl = if (!p.url.startsWith("auto_extract://") && com.example.ui.components.isValidPlayableMediaUrl(p.url)) {
+                                    p.url
+                                } else {
+                                    val rawTitle = movie.originalTitle ?: movie.title
+                                    val cached = com.example.ui.screens.player.ServerStateStore.getCachedData(
+                                        movie.id.toString(),
+                                        "$rawTitle-true-1-1",
+                                        "${movie.title}-true-1-1"
+                                    )
+                                    val candidate = cached?.directStreamUrl?.takeIf { it.isNotBlank() }
+                                        ?: cached?.extractedQualities?.firstOrNull { it.url.isNotBlank() && it.name != "Auto" }?.url
+                                    if (com.example.ui.components.isValidPlayableMediaUrl(candidate)) candidate!! else p.url
+                                }
+                                if (currentPos > 0L) {
+                                    com.example.ui.screens.player.PlaybackSyncStore.setPosition(movie.id, currentPos)
+                                }
+                                onPlay(p.title, realUrl, p.serverName, p.website, p.posterUrl)
                             },
                             onClose = {
                                 activePlayback = null
@@ -864,7 +883,7 @@ fun SeriesDetailsScreen(
                                     }?.url
                                 } else null
 
-                                val cachedUrl = if (lastPlayback != null && lastPlayback.url.isNotBlank() && lastPlayback.url.startsWith("http") && (lastPlayback.episodeId == null || lastPlayback.episodeId == ep.id)) {
+                                val candidateUrl = if (lastPlayback != null && lastPlayback.url.isNotBlank() && lastPlayback.url.startsWith("http") && (lastPlayback.episodeId == null || lastPlayback.episodeId == ep.id)) {
                                     lastPlayback.url
                                 } else if (!matchingQualityUrl.isNullOrBlank()) {
                                     matchingQualityUrl
@@ -872,9 +891,9 @@ fun SeriesDetailsScreen(
                                     cachedData.extractedQualities.firstOrNull { it.url.isNotBlank() && it.url.startsWith("http") }?.url
                                 } else if (cachedData != null && !cachedData.directStreamUrl.isNullOrBlank()) {
                                     cachedData.directStreamUrl
-                                } else if (cachedData != null && cachedData.serverLinks.isNotEmpty()) {
-                                    cachedData.serverLinks.values.firstOrNull { it.isNotBlank() && it.startsWith("http") }
                                 } else null
+
+                                val cachedUrl = candidateUrl?.takeIf { com.example.ui.components.isValidPlayableMediaUrl(it) }
 
                                 val fullTitle = "${series.title} - S${uiState.selectedSeason?.seasonNumber ?: 1}E${ep.episodeNumber}"
                                 val syncPos = com.example.ui.screens.player.PlaybackSyncStore.getPosition("${series.id}_${ep.id}")
@@ -1007,9 +1026,27 @@ fun SeriesDetailsScreen(
                     Box(modifier = if (isInPip) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(16f/9f)) {
                         com.example.ui.components.InlineDetailVideoPlayer(
                             playback = activePlayback!!,
+                            onPlaybackUrlExtracted = { realUrl ->
+                                activePlayback = activePlayback?.copy(url = realUrl)
+                            },
                             onFullscreen = { currentPos ->
                                 val p = activePlayback!!
-                                onPlay(p.title, p.url, p.serverName, p.website, p.posterUrl, p.contentType)
+                                val realUrl = if (!p.url.startsWith("auto_extract://") && com.example.ui.components.isValidPlayableMediaUrl(p.url)) {
+                                    p.url
+                                } else {
+                                    val cached = com.example.ui.screens.player.ServerStateStore.getCachedData(
+                                        series.id.toString(),
+                                        p.mediaId
+                                    )
+                                    val candidate = cached?.directStreamUrl?.takeIf { it.isNotBlank() }
+                                        ?: cached?.extractedQualities?.firstOrNull { it.url.isNotBlank() && it.name != "Auto" }?.url
+                                    if (com.example.ui.components.isValidPlayableMediaUrl(candidate)) candidate!! else p.url
+                                }
+                                val syncKey = "${p.mediaId}_${p.episodeId ?: ""}"
+                                if (currentPos > 0L) {
+                                    com.example.ui.screens.player.PlaybackSyncStore.setPosition(syncKey, currentPos)
+                                }
+                                onPlay(p.title, realUrl, p.serverName, p.website, p.posterUrl, p.contentType)
                             },
                             onClose = {
                                 activePlayback = null
@@ -1316,7 +1353,7 @@ fun SeriesDetailsScreen(
                                             }?.url
                                         } else null
 
-                                        val cachedUrl = if (lastPlayback != null && lastPlayback.url.isNotBlank() && lastPlayback.url.startsWith("http") && lastPlayback.episodeId == episode.id) {
+                                        val candidateUrl = if (lastPlayback != null && lastPlayback.url.isNotBlank() && lastPlayback.url.startsWith("http") && lastPlayback.episodeId == episode.id) {
                                             lastPlayback.url
                                         } else if (!matchingQualityUrl.isNullOrBlank()) {
                                             matchingQualityUrl
@@ -1324,9 +1361,9 @@ fun SeriesDetailsScreen(
                                             cachedData.extractedQualities.firstOrNull { it.url.isNotBlank() && it.url.startsWith("http") }?.url
                                         } else if (cachedData != null && !cachedData.directStreamUrl.isNullOrBlank()) {
                                             cachedData.directStreamUrl
-                                        } else if (cachedData != null && cachedData.serverLinks.isNotEmpty()) {
-                                            cachedData.serverLinks.values.firstOrNull { it.isNotBlank() && it.startsWith("http") }
                                         } else null
+
+                                        val cachedUrl = candidateUrl?.takeIf { com.example.ui.components.isValidPlayableMediaUrl(it) }
 
                                         val fullTitle = "${series.title} - S${uiState.selectedSeason?.seasonNumber ?: 1}E${episode.episodeNumber}"
                                         val syncPos = com.example.ui.screens.player.PlaybackSyncStore.getPosition("${series.id}_${episode.id}")
